@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from bson import ObjectId
+import math
 
 from database import db, create_document, get_documents
 from schemas import Cleaner, Booking, ServiceOption
@@ -23,6 +24,7 @@ app.add_middleware(
 class CleanerResponse(BaseModel):
     id: str
     name: str
+    provider_type: str
     rating: float
     total_reviews: int
     is_available: bool
@@ -31,6 +33,18 @@ class CleanerResponse(BaseModel):
     services: List[ServiceOption]
     location: dict
     base_callout_fee: float
+    distance_km: Optional[float] = None
+
+
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
 
 @app.get("/")
@@ -83,6 +97,7 @@ def seed_cleaners():
     demo = [
         {
             "name": "Sparkle Pro Detailing",
+            "provider_type": "company",
             "phone": "+1-555-0110",
             "bio": "Premium mobile car wash & detailing",
             "photo_url": "https://images.unsplash.com/photo-1609137144813-7d9921338f9b?w=800",
@@ -99,6 +114,7 @@ def seed_cleaners():
         },
         {
             "name": "EcoShine Mobile",
+            "provider_type": "individual",
             "phone": "+1-555-0111",
             "bio": "Waterless eco-friendly clean",
             "photo_url": "https://images.unsplash.com/photo-1515923162031-1d7cfbca8b89?w=800",
@@ -120,17 +136,41 @@ def seed_cleaners():
 
 
 @app.get("/cleaners", response_model=List[CleanerResponse])
-def list_cleaners(lat: Optional[float] = None, lng: Optional[float] = None, radius_km: float = 25.0):
+def list_cleaners(
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    radius_km: float = 25.0,
+    provider_type: Optional[str] = None
+):
     if db is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
-    # For simplicity, return all for now. In real case, apply geo filtering.
-    docs = get_documents("cleaner")
+    # Basic filter by provider_type if supplied
+    base_filter = {}
+    if provider_type in ("individual", "company"):
+        base_filter["provider_type"] = provider_type
+
+    docs = list(db["cleaner"].find(base_filter))
+
     results: List[CleanerResponse] = []
     for d in docs:
+        loc = d.get("location", {}) or {}
+        distance_km = None
+        if lat is not None and lng is not None and "lat" in loc and "lng" in loc:
+            try:
+                distance_km = haversine_km(float(lat), float(lng), float(loc["lat"]), float(loc["lng"]))
+            except Exception:
+                distance_km = None
+
+        # If distance filter provided, drop outside radius
+        if distance_km is not None and radius_km is not None:
+            if distance_km > float(radius_km):
+                continue
+
         results.append(CleanerResponse(
             id=str(d.get("_id")),
             name=d.get("name"),
+            provider_type=d.get("provider_type", "individual"),
             rating=d.get("rating", 0),
             total_reviews=d.get("total_reviews", 0),
             is_available=d.get("is_available", True),
@@ -138,8 +178,12 @@ def list_cleaners(lat: Optional[float] = None, lng: Optional[float] = None, radi
             bio=d.get("bio"),
             services=d.get("services", []),
             location=d.get("location", {}),
-            base_callout_fee=d.get("base_callout_fee", 0.0)
+            base_callout_fee=d.get("base_callout_fee", 0.0),
+            distance_km=round(distance_km, 2) if distance_km is not None else None,
         ))
+
+    # Sort by distance if available, otherwise rating
+    results.sort(key=lambda x: (x.distance_km is None, x.distance_km if x.distance_km is not None else 0, -x.rating))
     return results
 
 

@@ -9,7 +9,7 @@ Models:
 """
 
 from pydantic import BaseModel, Field, EmailStr
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 
 
@@ -29,6 +29,7 @@ class ServiceOption(BaseModel):
 
 class Cleaner(BaseModel):
     name: str = Field(..., description="Cleaner full name or business name")
+    provider_type: Literal["individual", "company"] = Field("individual", description="Whether this provider is an individual or a company")
     phone: Optional[str] = Field(None, description="Contact phone number")
     bio: Optional[str] = Field(None, description="Short profile/bio")
     photo_url: Optional[str] = Field(None, description="Profile photo URL")
